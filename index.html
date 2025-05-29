@@ -322,38 +322,142 @@
         ✅ Pillola registrata con successo!
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.23.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.23.0/firebase-database-compat.min.js"></script>
     <script>
-        // Configurazione Firebase (sostituisci con le tue credenziali)
+        // Configurazione Firebase con i tuoi dati
         const FIREBASE_CONFIG = {
-            apiKey: "demo-api-key",
-            authDomain: "pill-tracker-demo.firebaseapp.com",
-            databaseURL: "https://pill-tracker-demo-default-rtdb.firebaseio.com",
-            projectId: "pill-tracker-demo"
+            apiKey: "AIzaSyCJzPVr88N-0YCiz1pD7MKEvQkqFbRBNoc",
+            authDomain: "pillolario3.firebaseapp.com",
+            databaseURL: "https://pillolario3-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "pillolario3",
+            storageBucket: "pillolario3.firebasestorage.app",
+            messagingSenderId: "273568850179",
+            appId: "1:273568850179:web:ee1c784b04798db2cd8936"
         };
 
-        // Simulazione Firebase per demo (sostituisci con Firebase reale)
-        class SimpleStorage {
+        // Inizializza Firebase
+        firebase.initializeApp(FIREBASE_CONFIG);
+        const database = firebase.database();
+
+        // Classe Firebase Storage
+        class FirebaseStorage {
             constructor() {
-                this.data = JSON.parse(localStorage.getItem('pillTracker') || '{}');
+                this.userId = this.getUserId();
+                this.userRef = database.ref(`users/${this.userId}/pills`);
+                console.log('Firebase inizializzato per utente:', this.userId);
+            }
+
+            // Genera un ID utente unico per dispositivo
+            getUserId() {
+                let userId = localStorage.getItem('pillTracker_userId');
+                if (!userId) {
+                    userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                    localStorage.setItem('pillTracker_userId', userId);
+                    console.log('Nuovo utente creato:', userId);
+                }
+                return userId;
             }
 
             async set(key, value) {
-                this.data[key] = value;
-                localStorage.setItem('pillTracker', JSON.stringify(this.data));
-                // Simula sync con server
-                return Promise.resolve();
+                try {
+                    if (value === null) {
+                        // Rimuovi il record
+                        await this.userRef.child(key).remove();
+                        console.log('Rimosso da Firebase:', key);
+                    } else {
+                        // Salva con timestamp
+                        await this.userRef.child(key).set({
+                            time: value,
+                            timestamp: Date.now(),
+                            date: key
+                        });
+                        console.log('Salvato su Firebase:', key, value);
+                    }
+                    
+                    // Salva anche in localStorage come backup
+                    this.setLocal(key, value);
+                    return Promise.resolve();
+                } catch (error) {
+                    console.error('Errore Firebase set:', error);
+                    // Fallback a localStorage
+                    this.setLocal(key, value);
+                    showSuccessMessage('⚠️ Salvato offline (Firebase non disponibile)');
+                    return Promise.resolve();
+                }
             }
 
             async get(key) {
-                return Promise.resolve(this.data[key] || null);
+                try {
+                    const snapshot = await this.userRef.child(key).once('value');
+                    const data = snapshot.val();
+                    const result = data ? data.time : null;
+                    
+                    // Sincronizza con localStorage
+                    if (result) {
+                        this.setLocal(key, result);
+                    }
+                    
+                    return result;
+                } catch (error) {
+                    console.error('Errore Firebase get:', error);
+                    // Fallback a localStorage
+                    return this.getLocal(key);
+                }
             }
 
             async getAllDates() {
-                return Promise.resolve(Object.keys(this.data));
+                try {
+                    const snapshot = await this.userRef.once('value');
+                    const data = snapshot.val();
+                    return data ? Object.keys(data) : [];
+                } catch (error) {
+                    console.error('Errore Firebase getAllDates:', error);
+                    return this.getAllDatesLocal();
+                }
+            }
+
+            // Metodi localStorage per backup/fallback
+            setLocal(key, value) {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                if (value === null) {
+                    delete data[key];
+                } else {
+                    data[key] = value;
+                }
+                localStorage.setItem('pillTracker_backup', JSON.stringify(data));
+            }
+
+            getLocal(key) {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                return data[key] || null;
+            }
+
+            getAllDatesLocal() {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                return Object.keys(data);
+            }
+
+            // Funzione per sincronizzare dati locali con Firebase
+            async syncLocalToFirebase() {
+                try {
+                    const localData = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                    for (const [key, value] of Object.entries(localData)) {
+                        await this.userRef.child(key).set({
+                            time: value,
+                            timestamp: Date.now(),
+                            date: key
+                        });
+                    }
+                    console.log('Sincronizzazione locale → Firebase completata');
+                } catch (error) {
+                    console.error('Errore sincronizzazione:', error);
+                }
             }
         }
 
-        const storage = new SimpleStorage();
+        // Usa Firebase Storage
+        const storage = new FirebaseStorage();
         
         let currentDate = new Date();
         const monthNames = [
