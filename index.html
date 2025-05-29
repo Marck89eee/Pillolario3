@@ -262,6 +262,20 @@
             display: block;
         }
 
+        .error-message {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            border-left: 5px solid #dc3545;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -296,6 +310,11 @@
         <div class="header">
             <h1>💊 Pill Tracker</h1>
             <p>Traccia la tua pillola quotidiana con calendario e supporto NFC</p>
+        </div>
+
+        <div class="error-message" id="errorMessage">
+            <h3>⚠️ Errore di connessione Firebase</h3>
+            <p>Passaggio alla modalità offline. I dati verranno sincronizzati quando la connessione sarà ripristinata.</p>
         </div>
 
         <div class="nfc-section">
@@ -343,12 +362,11 @@
         <div>🔄 Sincronizzazione in corso...</div>
     </div>
 
-    <!-- Firebase SDK -->
-    <script type="module">
-        // Import Firebase modules
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getDatabase, ref, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+    <!-- Firebase SDK - versione compatibile con GitHub Pages -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
+    <script>
         // Firebase configuration
         const firebaseConfig = {
             apiKey: "AIzaSyCJzPVr88N-0YCiz1pD7MKEvQkqFbRBNoc",
@@ -361,8 +379,18 @@
         };
 
         // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const database = getDatabase(app);
+        let app, database;
+        let isFirebaseConnected = false;
+
+        try {
+            app = firebase.initializeApp(firebaseConfig);
+            database = firebase.database();
+            isFirebaseConnected = true;
+            console.log('✅ Firebase connesso correttamente');
+        } catch (error) {
+            console.error('❌ Errore connessione Firebase:', error);
+            showError();
+        }
 
         // Generate a unique user ID (stored in localStorage)
         function getUserId() {
@@ -376,26 +404,59 @@
 
         const userId = getUserId();
 
-        // Firebase Storage class
-        class FirebaseStorage {
+        // Fallback storage for offline mode
+        class LocalStorage {
+            constructor() {
+                this.data = JSON.parse(localStorage.getItem('pillTracker_data') || '{}');
+            }
+
+            async set(key, value) {
+                if (value === null) {
+                    delete this.data[key];
+                } else {
+                    this.data[key] = value;
+                }
+                localStorage.setItem('pillTracker_data', JSON.stringify(this.data));
+                return Promise.resolve();
+            }
+
+            async get(key) {
+                return Promise.resolve(this.data[key] || null);
+            }
+
+            async getAllDates() {
+                return Promise.resolve(Object.keys(this.data));
+            }
+        }
+
+        // Firebase Storage class with fallback
+        class HybridStorage {
             constructor(database, userId) {
                 this.database = database;
                 this.userId = userId;
+                this.localStorage = new LocalStorage();
+                this.isOnline = isFirebaseConnected;
             }
 
             async set(key, value) {
                 try {
-                    showLoading(true);
-                    const dataRef = ref(this.database, `users/${this.userId}/pills/${key}`);
-                    if (value === null) {
-                        await remove(dataRef);
-                    } else {
-                        await set(dataRef, value);
+                    // Always save locally first
+                    await this.localStorage.set(key, value);
+                    
+                    if (this.isOnline && this.database) {
+                        showLoading(true);
+                        const ref = this.database.ref(`users/${this.userId}/pills/${key}`);
+                        if (value === null) {
+                            await ref.remove();
+                        } else {
+                            await ref.set(value);
+                        }
                     }
                 } catch (error) {
-                    console.error('Error saving to Firebase:', error);
-                    showSuccessMessage('❌ Errore di sincronizzazione. Riprova.');
-                    throw error;
+                    console.error('Error saving data:', error);
+                    this.isOnline = false;
+                    showError();
+                    // Data is still saved locally
                 } finally {
                     showLoading(false);
                 }
@@ -403,31 +464,45 @@
 
             async get(key) {
                 try {
-                    const dataRef = ref(this.database, `users/${this.userId}/pills/${key}`);
-                    const snapshot = await get(dataRef);
-                    return snapshot.exists() ? snapshot.val() : null;
+                    if (this.isOnline && this.database) {
+                        const ref = this.database.ref(`users/${this.userId}/pills/${key}`);
+                        const snapshot = await ref.once('value');
+                        const value = snapshot.exists() ? snapshot.val() : null;
+                        
+                        // Sync with local storage
+                        await this.localStorage.set(key, value);
+                        return value;
+                    } else {
+                        // Use local storage when offline
+                        return await this.localStorage.get(key);
+                    }
                 } catch (error) {
-                    console.error('Error reading from Firebase:', error);
-                    return null;
+                    console.error('Error reading data:', error);
+                    this.isOnline = false;
+                    showError();
+                    return await this.localStorage.get(key);
                 }
             }
 
             async getAllDates() {
                 try {
-                    const dataRef = ref(this.database, `users/${this.userId}/pills`);
-                    const snapshot = await get(dataRef);
-                    return snapshot.exists() ? Object.keys(snapshot.val()) : [];
+                    if (this.isOnline && this.database) {
+                        const ref = this.database.ref(`users/${this.userId}/pills`);
+                        const snapshot = await ref.once('value');
+                        return snapshot.exists() ? Object.keys(snapshot.val()) : [];
+                    } else {
+                        return await this.localStorage.getAllDates();
+                    }
                 } catch (error) {
-                    console.error('Error reading all dates from Firebase:', error);
-                    return [];
+                    console.error('Error reading all dates:', error);
+                    this.isOnline = false;
+                    showError();
+                    return await this.localStorage.getAllDates();
                 }
             }
         }
 
-        const storage = new FirebaseStorage(database, userId);
-        
-        // Make storage available globally
-        window.pillStorage = storage;
+        const storage = new HybridStorage(database, userId);
         
         let currentDate = new Date();
         const monthNames = [
@@ -444,6 +519,15 @@
             } else {
                 indicator.classList.remove('show');
             }
+        }
+
+        // Show error message
+        function showError() {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.classList.add('show');
+            setTimeout(() => {
+                errorDiv.classList.remove('show');
+            }, 5000);
         }
 
         // Genera URL per NFC (URL fisso - programmare una sola volta)
@@ -512,10 +596,11 @@
         async function takePill(dateKey, timeString) {
             try {
                 await storage.set(dateKey, timeString);
-                renderCalendar();
-                updateStats();
+                await renderCalendar();
+                await updateStats();
             } catch (error) {
                 console.error('Error taking pill:', error);
+                showSuccessMessage('❌ Errore. Dati salvati localmente.');
             }
         }
 
@@ -690,13 +775,6 @@
             updateStats();
         }
 
-        // Make functions available globally
-        window.copyNfcUrl = copyNfcUrl;
-        window.previousMonth = previousMonth;
-        window.nextMonth = nextMonth;
-        window.goToToday = goToToday;
-        window.showSuccessMessage = showSuccessMessage;
-
         // Inizializzazione
         document.addEventListener('DOMContentLoaded', async function() {
             try {
@@ -704,10 +782,16 @@
                 handleNfcRequest();
                 await renderCalendar();
                 await updateStats();
-                console.log('✅ Firebase Pill Tracker inizializzato correttamente!');
+                console.log('✅ Pill Tracker inizializzato correttamente!');
+                
+                if (isFirebaseConnected) {
+                    console.log('🔥 Firebase attivo - sincronizzazione cloud abilitata');
+                } else {
+                    console.log('💾 Modalità offline - dati salvati localmente');
+                }
             } catch (error) {
                 console.error('❌ Errore durante l\'inizializzazione:', error);
-                showSuccessMessage('❌ Errore di connessione. Verifica la connessione internet.');
+                showSuccessMessage('❌ Errore di inizializzazione. Modalità offline attiva.');
             }
         });
 
@@ -715,6 +799,23 @@
         window.addEventListener('popstate', function() {
             handleNfcRequest();
         });
+
+        // Test connessione periodico
+        setInterval(async function() {
+            if (!storage.isOnline && database) {
+                try {
+                    const testRef = database.ref('.info/connected');
+                    const snapshot = await testRef.once('value');
+                    if (snapshot.val() === true) {
+                        storage.isOnline = true;
+                        console.log('🔄 Riconnesso a Firebase');
+                        showSuccessMessage('🔄 Riconnesso al cloud!');
+                    }
+                } catch (error) {
+                    // Rimani offline
+                }
+            }
+        }, 30000); // Controlla ogni 30 secondi
     </script>
 </body>
 </html>
