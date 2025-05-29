@@ -367,11 +367,11 @@
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
     <script>
-        // Firebase configuration
+        // Firebase configuration - CORRETTO l'URL del database
         const firebaseConfig = {
             apiKey: "AIzaSyCJzPVr88N-0YCiz1pD7MKEvQkqFbRBNoc",
             authDomain: "pillolario3.firebaseapp.com",
-            databaseURL: "https://pillolario3-default-rtdb.firebaseio.com",
+            databaseURL: "https://pillolario3-default-rtdb.europe-west1.firebasedatabase.app",
             projectId: "pillolario3",
             storageBucket: "pillolario3.firebasestorage.app",
             messagingSenderId: "273568850179",
@@ -775,13 +775,21 @@
             updateStats();
         }
 
-        // Inizializzazione
+        // Inizializzazione con migliore gestione errori
         document.addEventListener('DOMContentLoaded', async function() {
             try {
+                console.log('🚀 Inizializzazione Pill Tracker...');
+                
                 generateNfcUrl();
                 handleNfcRequest();
+                
+                // Prima renderizza il calendario, poi aggiorna le statistiche
+                console.log('📅 Rendering calendario...');
                 await renderCalendar();
+                
+                console.log('📊 Aggiornamento statistiche...');
                 await updateStats();
+                
                 console.log('✅ Pill Tracker inizializzato correttamente!');
                 
                 if (isFirebaseConnected) {
@@ -791,7 +799,18 @@
                 }
             } catch (error) {
                 console.error('❌ Errore durante l\'inizializzazione:', error);
-                showSuccessMessage('❌ Errore di inizializzazione. Modalità offline attiva.');
+                
+                // Anche in caso di errore, prova a renderizzare il calendario con dati locali
+                try {
+                    console.log('🔄 Tentativo di ripristino con dati locali...');
+                    isFirebaseConnected = false;
+                    await renderCalendar();
+                    await updateStats();
+                    showSuccessMessage('💾 App avviata in modalità offline');
+                } catch (localError) {
+                    console.error('❌ Errore anche con dati locali:', localError);
+                    showSuccessMessage('❌ Errore di inizializzazione critico');
+                }
             }
         });
 
@@ -800,7 +819,7 @@
             handleNfcRequest();
         });
 
-        // Test connessione periodico
+        // Test connessione periodico migliorato
         setInterval(async function() {
             if (!storage.isOnline && database) {
                 try {
@@ -810,9 +829,14 @@
                         storage.isOnline = true;
                         console.log('🔄 Riconnesso a Firebase');
                         showSuccessMessage('🔄 Riconnesso al cloud!');
+                        
+                        // Ri-renderizza per sincronizzare i dati
+                        await renderCalendar();
+                        await updateStats();
                     }
                 } catch (error) {
                     // Rimani offline
+                    console.log('🔴 Ancora offline...');
                 }
             }
         }, 30000); // Controlla ogni 30 secondi
