@@ -245,15 +245,6 @@
             transform: translateX(0);
         }
 
-        .debug-info {
-            background: rgba(255, 255, 255, 0.9);
-            padding: 10px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            font-size: 12px;
-            color: #666;
-        }
-
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -288,10 +279,6 @@
         <div class="header">
             <h1>💊 Pill Tracker</h1>
             <p>Traccia la tua pillola quotidiana con calendario e supporto NFC</p>
-        </div>
-
-        <div class="debug-info" id="debugInfo">
-            Debug: Caricamento in corso...
         </div>
 
         <div class="nfc-section">
@@ -335,92 +322,155 @@
         ✅ Pillola registrata con successo!
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.23.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.23.0/firebase-database-compat.min.js"></script>
     <script>
-        // Variabili globali
-        let currentDate = new Date();
-        let isFirebaseReady = false;
-        let storage = null;
+        // Configurazione Firebase con i tuoi dati
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyCJzPVr88N-0YCiz1pD7MKEvQkqFbRBNoc",
+            authDomain: "pillolario3.firebaseapp.com",
+            databaseURL: "https://pillolario3-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "pillolario3",
+            storageBucket: "pillolario3.firebasestorage.app",
+            messagingSenderId: "273568850179",
+            appId: "1:273568850179:web:ee1c784b04798db2cd8936"
+        };
+
+        // Inizializza Firebase
+        firebase.initializeApp(FIREBASE_CONFIG);
+        const database = firebase.database();
+
+        // Classe Firebase Storage
+        class FirebaseStorage {
+            constructor() {
+                this.userId = this.getUserId();
+                this.userRef = database.ref(`users/${this.userId}/pills`);
+                console.log('Firebase inizializzato per utente:', this.userId);
+            }
+
+            // Genera un ID utente unico per dispositivo
+            getUserId() {
+                let userId = localStorage.getItem('pillTracker_userId');
+                if (!userId) {
+                    userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                    localStorage.setItem('pillTracker_userId', userId);
+                    console.log('Nuovo utente creato:', userId);
+                }
+                return userId;
+            }
+
+            async set(key, value) {
+                try {
+                    if (value === null) {
+                        // Rimuovi il record
+                        await this.userRef.child(key).remove();
+                        console.log('Rimosso da Firebase:', key);
+                    } else {
+                        // Salva con timestamp
+                        await this.userRef.child(key).set({
+                            time: value,
+                            timestamp: Date.now(),
+                            date: key
+                        });
+                        console.log('Salvato su Firebase:', key, value);
+                    }
+                    
+                    // Salva anche in localStorage come backup
+                    this.setLocal(key, value);
+                    return Promise.resolve();
+                } catch (error) {
+                    console.error('Errore Firebase set:', error);
+                    // Fallback a localStorage
+                    this.setLocal(key, value);
+                    showSuccessMessage('⚠️ Salvato offline (Firebase non disponibile)');
+                    return Promise.resolve();
+                }
+            }
+
+            async get(key) {
+                try {
+                    const snapshot = await this.userRef.child(key).once('value');
+                    const data = snapshot.val();
+                    const result = data ? data.time : null;
+                    
+                    // Sincronizza con localStorage
+                    if (result) {
+                        this.setLocal(key, result);
+                    }
+                    
+                    return result;
+                } catch (error) {
+                    console.error('Errore Firebase get:', error);
+                    // Fallback a localStorage
+                    return this.getLocal(key);
+                }
+            }
+
+            async getAllDates() {
+                try {
+                    const snapshot = await this.userRef.once('value');
+                    const data = snapshot.val();
+                    return data ? Object.keys(data) : [];
+                } catch (error) {
+                    console.error('Errore Firebase getAllDates:', error);
+                    return this.getAllDatesLocal();
+                }
+            }
+
+            // Metodi localStorage per backup/fallback
+            setLocal(key, value) {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                if (value === null) {
+                    delete data[key];
+                } else {
+                    data[key] = value;
+                }
+                localStorage.setItem('pillTracker_backup', JSON.stringify(data));
+            }
+
+            getLocal(key) {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                return data[key] || null;
+            }
+
+            getAllDatesLocal() {
+                const data = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                return Object.keys(data);
+            }
+
+            // Funzione per sincronizzare dati locali con Firebase
+            async syncLocalToFirebase() {
+                try {
+                    const localData = JSON.parse(localStorage.getItem('pillTracker_backup') || '{}');
+                    for (const [key, value] of Object.entries(localData)) {
+                        await this.userRef.child(key).set({
+                            time: value,
+                            timestamp: Date.now(),
+                            date: key
+                        });
+                    }
+                    console.log('Sincronizzazione locale → Firebase completata');
+                } catch (error) {
+                    console.error('Errore sincronizzazione:', error);
+                }
+            }
+        }
+
+        // Usa Firebase Storage
+        const storage = new FirebaseStorage();
         
+        let currentDate = new Date();
         const monthNames = [
             'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
             'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'
         ];
         const dayNames = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
 
-        // Debug logging
-        function debugLog(message) {
-            console.log(message);
-            const debugDiv = document.getElementById('debugInfo');
-            if (debugDiv) {
-                debugDiv.innerHTML += '<br>' + new Date().toLocaleTimeString() + ': ' + message;
-            }
-        }
-
-        // Storage semplificato che usa solo localStorage
-        class SimpleStorage {
-            constructor() {
-                this.storageKey = 'pillTracker_data';
-                debugLog('Storage semplificato inizializzato');
-            }
-
-            async set(key, value) {
-                try {
-                    const data = this.getAllData();
-                    if (value === null) {
-                        delete data[key];
-                    } else {
-                        data[key] = value;
-                    }
-                    localStorage.setItem(this.storageKey, JSON.stringify(data));
-                    debugLog(`Salvato: ${key} = ${value}`);
-                    return Promise.resolve();
-                } catch (error) {
-                    debugLog(`Errore salvataggio: ${error.message}`);
-                    throw error;
-                }
-            }
-
-            async get(key) {
-                try {
-                    const data = this.getAllData();
-                    const result = data[key] || null;
-                    debugLog(`Letto: ${key} = ${result}`);
-                    return result;
-                } catch (error) {
-                    debugLog(`Errore lettura: ${error.message}`);
-                    return null;
-                }
-            }
-
-            getAllData() {
-                try {
-                    return JSON.parse(localStorage.getItem(this.storageKey) || '{}');
-                } catch (error) {
-                    debugLog(`Errore parsing dati: ${error.message}`);
-                    return {};
-                }
-            }
-
-            async getAllDates() {
-                try {
-                    const data = this.getAllData();
-                    return Object.keys(data);
-                } catch (error) {
-                    debugLog(`Errore getAllDates: ${error.message}`);
-                    return [];
-                }
-            }
-        }
-
-        // Inizializza storage
-        storage = new SimpleStorage();
-
-        // Genera URL per NFC
+        // Genera URL per NFC (URL fisso - programmare una sola volta)
         function generateNfcUrl() {
             const currentUrl = window.location.href.split('?')[0];
             const nfcUrl = `${currentUrl}?action=take_pill`;
             document.getElementById('nfcUrl').textContent = nfcUrl;
-            debugLog('URL NFC generato: ' + nfcUrl);
             return nfcUrl;
         }
 
@@ -431,6 +481,7 @@
                 await navigator.clipboard.writeText(url);
                 showSuccessMessage('URL copiato negli appunti!');
             } catch (err) {
+                // Fallback per browser che non supportano clipboard API
                 const textArea = document.createElement('textarea');
                 textArea.value = url;
                 document.body.appendChild(textArea);
@@ -441,12 +492,11 @@
             }
         }
 
-        // Gestisci parametri URL per NFC
+        // Gestisci parametri URL per NFC - VERSIONE CORRETTA
         async function handleNfcRequest() {
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get('action') === 'take_pill') {
                 try {
-                    debugLog('Richiesta NFC rilevata');
                     const today = new Date();
                     const dateKey = formatDateKey(today);
                     const timeString = today.toLocaleTimeString('it-IT', { 
@@ -454,20 +504,24 @@
                         minute: '2-digit' 
                     });
                     
-                    debugLog(`Registrando pillola per: ${dateKey} alle ${timeString}`);
+                    console.log('NFC attivato - Registrando pillola per:', dateKey, 'alle', timeString);
                     
+                    // Esegui tutte le operazioni in modo asincrono
                     await takePill(dateKey, timeString);
+                    
+                    // Forza il re-render del calendario e delle statistiche
                     await renderCalendar();
                     await updateStats();
                     
                     showSuccessMessage('🏷️ Pillola registrata tramite NFC!');
                     
+                    // Pulisci URL dopo 2 secondi per mantenere l'app pulita
                     setTimeout(() => {
                         window.history.replaceState({}, document.title, window.location.pathname);
                     }, 2000);
                     
                 } catch (error) {
-                    debugLog(`Errore NFC: ${error.message}`);
+                    console.error('Errore durante registrazione NFC:', error);
                     showSuccessMessage('❌ Errore durante la registrazione');
                 }
             }
@@ -488,167 +542,180 @@
             return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
         }
 
-        // Registra assunzione pillola
+        // Registra assunzione pillola - VERSIONE MIGLIORATA
         async function takePill(dateKey, timeString) {
             try {
                 await storage.set(dateKey, timeString);
-                debugLog(`Pillola salvata: ${dateKey} alle ${timeString}`);
+                console.log('Pillola salvata per:', dateKey, 'alle', timeString);
             } catch (error) {
-                debugLog(`Errore salvataggio pillola: ${error.message}`);
-                throw error;
+                console.error('Errore salvataggio pillola:', error);
+                throw error; // Rilancia l'errore per gestirlo sopra
             }
         }
 
         // Click su giorno del calendario
         async function onDayClick(dateKey, dayElement) {
-            try {
-                const timeString = new Date().toLocaleTimeString('it-IT', { 
-                    hour: '2-digit', 
-                    minute: '2-digit' 
-                });
-                
-                const existingTime = await storage.get(dateKey);
-                if (existingTime) {
-                    await storage.set(dateKey, null);
-                    showSuccessMessage('❌ Pillola rimossa per questo giorno');
-                } else {
-                    await takePill(dateKey, timeString);
-                    showSuccessMessage('✅ Pillola registrata!');
-                }
-                
+            const timeString = new Date().toLocaleTimeString('it-IT', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            const existingTime = await storage.get(dateKey);
+            if (existingTime) {
+                // Se già presa, rimuovi
+                await storage.set(dateKey, null);
                 await renderCalendar();
                 await updateStats();
-            } catch (error) {
-                debugLog(`Errore click giorno: ${error.message}`);
-                showSuccessMessage('❌ Errore durante l\'operazione');
+                showSuccessMessage('❌ Pillola rimossa per questo giorno');
+            } else {
+                // Se non presa, aggiungi
+                await takePill(dateKey, timeString);
+                await renderCalendar();
+                await updateStats();
+                showSuccessMessage('✅ Pillola registrata!');
             }
         }
 
-        // Renderizza calendario
+        // Renderizza calendario - VERSIONE CORRETTA
         async function renderCalendar() {
+            const calendar = document.getElementById('calendar');
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            
+            console.log('Rendering calendario per:', monthNames[month], year);
+            
+            // Aggiorna titolo mese
+            document.getElementById('currentMonth').textContent = 
+                `${monthNames[month]} ${year}`;
+            
+            // Pulisci completamente il calendario prima di ri-renderizzare
+            calendar.innerHTML = '';
+            
+            // Headers giorni settimana
+            dayNames.forEach(day => {
+                const header = document.createElement('div');
+                header.className = 'day-header';
+                header.textContent = day;
+                calendar.appendChild(header);
+            });
+            
+            // Primo giorno del mese e ultimo giorno
+            const firstDay = new Date(year, month, 1);
+            const lastDay = new Date(year, month + 1, 0);
+            const startDate = new Date(firstDay);
+            startDate.setDate(startDate.getDate() - firstDay.getDay());
+            
+            // CORREZIONE PRINCIPALE: Raccogli tutti i dati prima di creare le celle
+            const dateKeys = [];
+            const pillData = {};
+            
+            // Prepara tutte le date che servono
+            for (let i = 0; i < 42; i++) {
+                const cellDate = new Date(startDate);
+                cellDate.setDate(startDate.getDate() + i);
+                const dateKey = formatDateKey(cellDate);
+                dateKeys.push(dateKey);
+            }
+            
+            // Carica tutti i dati delle pillole in batch
             try {
-                debugLog('Inizio rendering calendario');
-                const calendar = document.getElementById('calendar');
-                const year = currentDate.getFullYear();
-                const month = currentDate.getMonth();
+                for (const dateKey of dateKeys) {
+                    pillData[dateKey] = await storage.get(dateKey);
+                }
+            } catch (error) {
+                console.error('Errore caricamento dati pillole:', error);
+            }
+            
+            // Ora crea tutte le celle con i dati già caricati
+            for (let i = 0; i < 42; i++) {
+                const cellDate = new Date(startDate);
+                cellDate.setDate(startDate.getDate() + i);
                 
-                document.getElementById('currentMonth').textContent = 
-                    `${monthNames[month]} ${year}`;
+                const dayCell = document.createElement('div');
+                dayCell.className = 'day-cell';
                 
-                calendar.innerHTML = '';
+                const isCurrentMonth = cellDate.getMonth() === month;
+                const dateKey = formatDateKey(cellDate);
                 
-                // Headers giorni settimana
-                dayNames.forEach(day => {
-                    const header = document.createElement('div');
-                    header.className = 'day-header';
-                    header.textContent = day;
-                    calendar.appendChild(header);
-                });
-                
-                // Calcola date
-                const firstDay = new Date(year, month, 1);
-                const startDate = new Date(firstDay);
-                startDate.setDate(startDate.getDate() - firstDay.getDay());
-                
-                // Genera 42 giorni
-                for (let i = 0; i < 42; i++) {
-                    const cellDate = new Date(startDate);
-                    cellDate.setDate(startDate.getDate() + i);
-                    
-                    const dayCell = document.createElement('div');
-                    dayCell.className = 'day-cell';
-                    
-                    const isCurrentMonth = cellDate.getMonth() === month;
-                    const dateKey = formatDateKey(cellDate);
-                    
-                    if (!isCurrentMonth) {
-                        dayCell.classList.add('other-month');
-                    }
-                    
-                    // Numero del giorno
-                    const dayNumber = document.createElement('div');
-                    dayNumber.className = 'day-number';
-                    dayNumber.textContent = cellDate.getDate();
-                    dayCell.appendChild(dayNumber);
-                    
-                    // Controlla se pillola presa
-                    try {
-                        const timeTaken = await storage.get(dateKey);
-                        if (timeTaken) {
-                            dayCell.classList.add('taken');
-                            
-                            const pillIcon = document.createElement('div');
-                            pillIcon.className = 'pill-icon';
-                            pillIcon.textContent = '💊';
-                            dayCell.appendChild(pillIcon);
-                            
-                            const timeDiv = document.createElement('div');
-                            timeDiv.className = 'time-taken';
-                            timeDiv.textContent = timeTaken;
-                            dayCell.appendChild(timeDiv);
-                        }
-                    } catch (error) {
-                        debugLog(`Errore controllo pillola per ${dateKey}: ${error.message}`);
-                    }
-                    
-                    // Event listener
-                    dayCell.addEventListener('click', () => onDayClick(dateKey, dayCell));
-                    
-                    calendar.appendChild(dayCell);
+                if (!isCurrentMonth) {
+                    dayCell.classList.add('other-month');
                 }
                 
-                debugLog(`Calendario renderizzato: ${monthNames[month]} ${year}`);
-            } catch (error) {
-                debugLog(`Errore rendering calendario: ${error.message}`);
+                // Numero del giorno
+                const dayNumber = document.createElement('div');
+                dayNumber.className = 'day-number';
+                dayNumber.textContent = cellDate.getDate();
+                dayCell.appendChild(dayNumber);
+                
+                // Controlla se pillola presa (usa i dati pre-caricati)
+                const timeTaken = pillData[dateKey];
+                if (timeTaken) {
+                    dayCell.classList.add('taken');
+                    
+                    const pillIcon = document.createElement('div');
+                    pillIcon.className = 'pill-icon';
+                    pillIcon.textContent = '💊';
+                    dayCell.appendChild(pillIcon);
+                    
+                    const timeDiv = document.createElement('div');
+                    timeDiv.className = 'time-taken';
+                    timeDiv.textContent = timeTaken;
+                    dayCell.appendChild(timeDiv);
+                }
+                
+                // Event listener
+                dayCell.addEventListener('click', () => onDayClick(dateKey, dayCell));
+                
+                calendar.appendChild(dayCell);
             }
+            
+            console.log('Calendario renderizzato completamente');
         }
 
         // Aggiorna statistiche
         async function updateStats() {
-            try {
-                debugLog('Aggiornamento statistiche');
-                const year = currentDate.getFullYear();
-                const month = currentDate.getMonth();
-                const daysInMonth = new Date(year, month + 1, 0).getDate();
-                
-                let monthlyCount = 0;
-                let currentStreak = 0;
-                
-                // Conta pillole del mese corrente
-                for (let day = 1; day <= daysInMonth; day++) {
-                    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                    const timeTaken = await storage.get(dateKey);
-                    if (timeTaken) {
-                        monthlyCount++;
-                    }
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            
+            let monthlyCount = 0;
+            let currentStreak = 0;
+            
+            // Conta pillole del mese corrente
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const timeTaken = await storage.get(dateKey);
+                if (timeTaken) {
+                    monthlyCount++;
                 }
-                
-                // Calcola streak
-                const today = new Date();
-                let checkDate = new Date(today);
-                
-                for (let i = 0; i < 365; i++) {
-                    const dateKey = formatDateKey(checkDate);
-                    const timeTaken = await storage.get(dateKey);
-                    
-                    if (timeTaken) {
-                        currentStreak++;
-                        checkDate.setDate(checkDate.getDate() - 1);
-                    } else {
-                        break;
-                    }
-                }
-                
-                const percentage = Math.round((monthlyCount / daysInMonth) * 100);
-                
-                document.getElementById('monthlyCount').textContent = monthlyCount;
-                document.getElementById('streakCount').textContent = currentStreak;
-                document.getElementById('monthlyPercentage').textContent = `${percentage}%`;
-                
-                debugLog(`Statistiche: ${monthlyCount} pillole, ${currentStreak} giorni consecutivi, ${percentage}%`);
-            } catch (error) {
-                debugLog(`Errore aggiornamento statistiche: ${error.message}`);
             }
+            
+            // Calcola streak dalla data corrente all'indietro
+            const today = new Date();
+            let checkDate = new Date(today);
+            
+            while (true) {
+                const dateKey = formatDateKey(checkDate);
+                const timeTaken = await storage.get(dateKey);
+                
+                if (timeTaken) {
+                    currentStreak++;
+                    checkDate.setDate(checkDate.getDate() - 1);
+                } else {
+                    break;
+                }
+                
+                // Evita loop infiniti
+                if (currentStreak > 365) break;
+            }
+            
+            const percentage = Math.round((monthlyCount / daysInMonth) * 100);
+            
+            document.getElementById('monthlyCount').textContent = monthlyCount;
+            document.getElementById('streakCount').textContent = currentStreak;
+            document.getElementById('monthlyPercentage').textContent = `${percentage}%`;
+            
+            console.log('Statistiche aggiornate:', { monthlyCount, currentStreak, percentage });
         }
 
         // Navigazione mesi
@@ -670,24 +737,28 @@
             await updateStats();
         }
 
-        // Inizializzazione
+        // Inizializzazione - VERSIONE MIGLIORATA
         document.addEventListener('DOMContentLoaded', async function() {
             try {
-                debugLog('Inizializzazione app');
+                console.log('Inizializzazione app...');
                 
                 generateNfcUrl();
+                
+                // Gestisci prima la richiesta NFC se presente
                 await handleNfcRequest();
+                
+                // Poi renderizza il calendario e le statistiche
                 await renderCalendar();
                 await updateStats();
                 
-                debugLog('App inizializzata correttamente');
+                console.log('App inizializzata correttamente');
             } catch (error) {
-                debugLog(`Errore inizializzazione: ${error.message}`);
+                console.error('Errore durante inizializzazione:', error);
                 showSuccessMessage('❌ Errore durante l\'inizializzazione');
             }
         });
 
-        // Gestione popstate per NFC
+        // Aggiorna URL quando l'URL cambia (per supporto pieno NFC)
         window.addEventListener('popstate', async function() {
             await handleNfcRequest();
         });
